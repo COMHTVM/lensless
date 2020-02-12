@@ -5,11 +5,12 @@ from dataio import *
 from torch.utils.data import DataLoader
 from denoising_unet import DenoisingUnet
 from torch.utils.tensorboard import SummaryWriter
+from torchvision.utils import save_image
 import torchvision.transforms as transforms
 from torch.autograd import Variable
 from PIL import Image
+import sys
 import torch.nn as nn
-import psutil
 
 device = torch.device('cuda')
 
@@ -41,30 +42,45 @@ def params_to_filename(params):
         fname += "%s_%s_" % (key, value)
     return fname
 
-def image_loader(img_name):
+def image_loader(img_name,hyps):
     '''
     Input: img_name str - path to single image file to load
-    Usage: model_input = image_loader('input.png')
+    Usage: model_input, ground_truth = image_loader('input.png')
     ---
-    Output: Variable tensor of image of the format (C,H,W)
+    Output: Variable tensor of image of the format (1,C,H,W)
     '''
-    imsize = 200
-    loader = transforms.Compose([transforms.Resize(imsize), transforms.ToTensor()])
+    loader = transforms.Compose([transforms.CenterCrop(size=(256,256)),
+            transforms.Resize(size=(512,512)),
+            transforms.ToTensor()])
 
     image = Image.open(img_name)
     image = loader(image).float()
-    image = Variable(image, requires_grad=True)
-    image = image.unsqueeze(0) # specify a batch size of 1
-    padder = nn.ZeroPad2d(28)
-    image = padder(image)
-    print('Image shape: ',image.shape)
-    return image.cuda()
+    image = torch.Tensor(srgb_to_linear(image))
+    psf = torch.Tensor(np.load(hyps['psf_file']))
+    psf /= psf.sum()
+    blurred_image = convolve_img(image, psf)
+    save_image(blurred_image,"val/blurred_val.png")
+    final = torch.zeros(blurred_image.shape)
+    for i in range(0,3):
+        channel = blurred_image[i,:,:]
+        channel = wiener_filter(channel, psf, K=hyps['K'])
+        final[i,:,:] = torch.Tensor(channel)
+
+    blurred_image = Variable(final, requires_grad=True)
+    blurred_image = blurred_image.unsqueeze(0) # specify a batch size of 1
+
+    #padder = nn.ZeroPad2d(28)
+    #image = padder(image)
+    print('Image shape: ',blurred_image.shape)
+    return blurred_image.cuda(),image.cuda()
 
 def get_exp_num(file_path, exp_name):
     '''
     Find the next open experiment ID number.
     exp_name: str path to the main experiment folder that contains the model folder
     '''
+    print(file_path)
+    print(exp_name)
     exp_folder = os.path.expanduser(file_path)
     _,dirs,_ = next(os.walk(exp_folder))
     exp_nums = set()
@@ -91,19 +107,21 @@ def train(hyps, model, dataset):
     model.cuda()
 
     # establish folders for saving experiment
-    file_str = hyps['logging_root'] +'/logs'
-    hyps['exp_num'] = get_exp_num(file_path=file_str, exp_name=hyps['exp_name'])
-    dir_name = "{}_{}".format(hyps['exp_name'],hyps['exp_num'])
-    print('Saving information to ', dir_name)
-    log_dir = os.path.join(hyps['logging_root'], 'logs', dir_name)
-    run_dir = os.path.join(hyps['logging_root'], 'runs', dir_name)
+    # make initial logging folders
+    run_init = os.path.join(hyps['logging_root'],hyps['exp_name'])
+    os.makedirs(run_init, exist_ok=True)
 
-    os.makedirs(log_dir, exist_ok=True)
+    file_str = hyps['logging_root'] + '/' + hyps['exp_name']
+    hyps['exp_num'] = get_exp_num(file_path=file_str, exp_name=hyps['exp_name'])
+    dir_name = "{}/{}_{}".format(hyps['exp_name'],hyps['exp_name'],hyps['exp_num'])
+    print('Saving information to ', dir_name)
+    run_dir = os.path.join(hyps['logging_root'], dir_name)
+
     os.makedirs(run_dir, exist_ok=True)
 
     optimizer = torch.optim.Adam(model.parameters(), lr=hyps['lr'])
 
-    writer = SummaryWriter(run_dir) # run director for tensorboard information
+    writer = SummaryWriter(run_dir) # run directory for tensorboard information
     iter = 0
 
     writer.add_scalar("learning_rate", hyps['lr'], 0)
@@ -111,6 +129,7 @@ def train(hyps, model, dataset):
     print('Beginning training...')
     for epoch in range(hyps['max_epoch']):
         for model_input, ground_truth in dataloader:
+
             ground_truth = ground_truth.cuda()
             model_input = model_input.cuda()
 
@@ -124,6 +143,8 @@ def train(hyps, model, dataset):
 
             total_loss = dist_loss + hyps['reg_weight'] * reg_loss
 
+            PSNR = model.get_psnr(model_outputs, ground_truth)
+
             total_loss.backward()
             optimizer.step()
 
@@ -132,10 +153,11 @@ def train(hyps, model, dataset):
 
             writer.add_scalar("scaled_regularization_loss", reg_loss * hyps['reg_weight'], iter)
             writer.add_scalar("distortion_loss", dist_loss, iter)
+            writer.add_scalar("PSNR", PSNR, iter)
 
             if not iter: # on the first iteration
                 # Save parameters used into the log directory.
-                results_file = log_dir + "/params.txt"
+                results_file = run_dir + "/params.txt"
                 with open(results_file,'a') as f:
                     f.write("Hyperparameters: \n")
                     for k in hyps.keys():
@@ -143,10 +165,38 @@ def train(hyps, model, dataset):
                     f.write("\n")
 
             iter += 1
-            if iter % 10000 == 0:
-                torch.save(model.state_dict(), os.path.join(log_dir, 'model-epoch_%d_iter_%s.pth' % (epoch, iter)))
+            if iter % 3000 == 0: # used to be 10,000
+                torch.save(model.state_dict(), os.path.join(run_dir, 'model-epoch_%d_iter_%s.pth' % (epoch, iter)))
 
-    torch.save(model.state_dict(), os.path.join(log_dir, 'model-epoch_%d_iter_%s.pth' % (epoch, iter)))
+    torch.save(model.state_dict(), os.path.join(run_dir, 'model-epoch_%d_iter_%s.pth' % (epoch, iter)))
+
+def test(hyps,model):
+# load later in training
+    epoch = 7
+    iter = 15000
+    hyps['exp_num'] = 0
+    dir_name = "{}/{}_{}".format(hyps['exp_name'], hyps['exp_name'], hyps['exp_num'])
+    run_dir = os.path.join(hyps['logging_root'], dir_name)
+    path_to_model = os.path.join(run_dir, 'model-epoch_%d_iter_%s.pth' % (epoch, iter))
+    print('Loading ', path_to_model)
+
+    model.load_state_dict(torch.load(path_to_model))
+    model.eval()
+    model_input,ground_truth = image_loader('2008_000027_val.jpg',hyps)
+    save_image(ground_truth,"val/truth_val.png")
+    ground_truth = ground_truth.unsqueeze(0)
+    save_image(model_input, "val/input_val.png")
+    with torch.no_grad():
+        print()
+        print('Testing on single image...')
+        model_output = model(model_input)
+        save_image(model_output, "val/output_val.png")
+
+        PSNR = model.get_psnr(model_output, ground_truth)
+        print('PSNR: ', PSNR)
+
+
+
 
 
 def main():
@@ -161,16 +211,11 @@ def main():
     print(hyps_str)
 
     os.makedirs(hyps['data_root'], exist_ok=True)
-
-    # dataset = NoisyCIFAR10Dataset(data_root=hyps['data_root'], hyps=hyps)
-    # model = DenoisingUnet(img_sidelength=32)
-
-    # dataset = DIV2KDataset(data_root=hyps['data_root'])
-    # model = DenoisingUnet(img_sidelength=1000)
-
-    dataset = NoisySBDataset(data_root=hyps['data_root'],hyps=hyps)
+    #dataset = NoisySBDataset(data_root=hyps['data_root'], hyps=hyps)
     model = DenoisingUnet(img_sidelength=512)
-    train(hyps, model, dataset)
+    test(hyps, model)
+    #train(hyps, model, dataset)
+
 
 if __name__ == '__main__':
     main()

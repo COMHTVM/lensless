@@ -5,6 +5,8 @@ from torchvision.transforms import *
 import matplotlib.pyplot as plt
 import sys
 import torch.nn as nn
+import numpy as np
+from numpy.fft import fft2, ifft2
 
 sys.path.append("../")
 from utils import *
@@ -16,13 +18,10 @@ def linear_to_srgb(img):
     return np.where(img <= 0.04045, img / 12.92, ((img + 0.055) / 1.055) ** 2.4)
 
 def psf2otf(input_filter, output_size):
-    '''
-    Convert pytorch tensor filter into its FFT
-    Input:
-        input_filter: tensor (height, width)
-        output_size: (height, width, num_channels) of image
-    Output:
-        oft of size output size
+    ''' Convert pytorch tensor PSF into its FFT
+    :param input_filter: tensor (height, width)
+    :param output_size: (height, width, num_channels) of image
+    :return: otf of output_size
     '''
     fh,fw = input_filter.shape
 
@@ -47,11 +46,9 @@ def psf2otf(input_filter, output_size):
 
 def convolve_img(image, psf):
     ''' Convolves image with a PSF kernel, convolves on each color channel
-    Parameters:
-        image: (num_channels, height, width)
-        psf: (height, width)
-    Output:
-        final: convolved image (num_channels, height, width)
+    :param image: pytorch tensor of image (num_channels, height, width)
+    :param psf: pytorch tensor of psf (height, width)
+    :return: final convolved image (num_channels, height, width)
     '''
     final = torch.zeros(image.shape)
     psf = stack_complex(torch.real(psf), torch.imag(psf))
@@ -63,7 +60,16 @@ def convolve_img(image, psf):
         final[i,:,:] = convolved_image
     return final
 
+
 def inverse_filter(image, psf, K):
+    ''' Modified inverse filter with damping factor
+    Performs inverse filtering on each channel
+    :param image: pytorch tensor (num_channels, height, width)
+    :param psf: pytorch tensor of psf (height, width)
+    :param K: float damping factor
+    :return:
+    '''
+
     final = torch.zeros(image.shape)
 
     otf = psf2otf(psf, output_size = image.shape[1:3])
@@ -81,6 +87,17 @@ def inverse_filter(image, psf, K):
         final[i,:,:] = torch.clamp(filtered, min=0, max=255)
     return final
 
+def wiener_filter(image, kernel, K):
+    image = image.numpy()
+    kernel = kernel.numpy()
+    dummy = np.copy(image)
+    dummy = fft2(dummy)
+    kernel = fft2(kernel, s=image.shape)
+    kernel = np.conj(kernel)/(np.abs(kernel)**2 + K)
+    dummy = dummy * kernel
+    dummy = np.abs(ifft2(dummy))
+    return dummy
+
 class NoisySBDataset():
     def __init__(self,
                  data_root,
@@ -93,8 +110,12 @@ class NoisySBDataset():
             Resize(size=(512,512)),
             ToTensor()
         ])
+        self.K = hyps['K']
+
+        # if you set download=True AND you've downloaded the files,
+        # it'll never finish running :-(
         self.dataset = torchvision.datasets.SBDataset(root=data_root,
-                                                   image_set='train',
+                                                   image_set=hyps['train_test'],
                                                    download=False)
 
     def __len__(self):
@@ -110,10 +131,20 @@ class NoisySBDataset():
             img = self.transforms(img)
         img = torch.Tensor(srgb_to_linear(img))
         psf = torch.Tensor(np.load(self.psf))
+        psf /= psf.sum()
 
         blurred_img = convolve_img(img, psf)
-        blurred_img = inverse_filter(blurred_img, psf, K=0.1)
-        blurred_img = torch.Tensor(linear_to_srgb(blurred_img))
+
+        final = torch.zeros(blurred_img.shape)
+        for i in range(0,3):
+            channel = blurred_img[i,:,:]
+            channel = wiener_filter(channel, psf, K=self.K)
+            final[i,:,:] = torch.Tensor(channel)
+
+        #blurred_img = wiener_filter(blurred_img, psf, K=0.001)
+        # makes image darker
+        #blurred_img = torch.Tensor(linear_to_srgb(blurred_img))
+        blurred_img = final
         return blurred_img, img
 
 class NoisyCIFAR10Dataset():
@@ -131,7 +162,7 @@ class NoisyCIFAR10Dataset():
         ])
         self.dataset = torchvision.datasets.CelebA(root=data_root,
                                                    split='train',
-                                                   download=True,
+                                                   download=False,
                                                    transform=self.transforms)
 
     def __len__(self):

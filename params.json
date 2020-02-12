@@ -1,12 +1,13 @@
 {
   "data_root": "./data",
-  "logging_root": "./experiments",
+  "logging_root": "./runs",
   "train_test": "train",
-  "exp_name": "inverse10",
+  "exp_name": "random50",
   "checkpoint": null,
   "max_epoch": 100,
   "lr": 1e-3,
-  "batch_size": 1,
+  "batch_size": 4,
   "reg_weight": 0.0,
-  "psf_file": "psfs/diffusercam_psf_10.npy"
+  "psf_file": "psfs/random_psf_50.npy",
+  "K": 0.2
 }
