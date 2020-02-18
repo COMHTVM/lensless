@@ -564,6 +564,7 @@ class FresnelPropagation(NearFieldTransferFnPropagationBase):
         # sampling positions along the x and y dims
         min_coords = -1 / (2 * self.slm_pixel_pitch)
         max_coords = 1 / (2 * self.slm_pixel_pitch) - 1 / self.conv_size
+
         coords_fx = np.linspace(min_coords[1],
                                 max_coords[1],
                                 self.conv_resolution[1])
