@@ -2,7 +2,7 @@ import os, datetime
 import torch
 import json
 from dataio import *
-import psf_utils
+import utils
 from torch.utils.data import DataLoader
 from denoising_unet import DenoisingUnet
 from torch.utils.tensorboard import SummaryWriter
@@ -12,9 +12,13 @@ from torch.autograd import Variable
 from PIL import Image
 import matplotlib.pyplot as plt
 import sys
+import numpy as np
+import math
+from propagation import Propagation
+import torch.nn
+import optics
 
 device = torch.device('cuda')
-
 
 def load_json(file_name):
     '''
@@ -46,7 +50,26 @@ def params_to_filename(params):
     return fname
 
 
-def image_loader(img_name, hyps):
+def image_loader(img_name):
+    '''
+    Input: img_name str - path to single image file to load
+    Usage: model_input, ground_truth = image_loader('input.png')
+    ---
+    Output: Variable tensor of image of the format (1,C,H,W)
+    '''
+    loader = transforms.Compose([transforms.CenterCrop(size=(1248,1248)),
+                                 transforms.Resize(size=(2496,2496)),
+                                 transforms.ToTensor()])
+
+    image = Image.open(img_name)
+    image = loader(image).float().cpu()
+    image = torch.Tensor(srgb_to_linear(image))
+    blurred_image = image.unsqueeze(0)  # specify a batch size of 1
+    image = image.unsqueeze(0)
+    return blurred_image.cuda(), image.cuda()
+
+
+def image_loader_blur(img_name,hyps, K):
     '''
     Input: img_name str - path to single image file to load
     Usage: model_input, ground_truth = image_loader('input.png')
@@ -64,19 +87,19 @@ def image_loader(img_name, hyps):
     psf /= psf.sum()
     blurred_image = convolve_img(image, psf)
 
-    blurred_rgb = torch.Tensor(linear_to_srgb(blurred_image))
+    blurred_rgb = torch.Tensor(linear_to_srgb(torch.squeeze(blurred_image,0)))
     save_image(blurred_rgb, "val/blurred_val.png")
-    # final = torch.zeros(blurred_image.shape)
-    # for i in range(0,3):
-    #     channel = blurred_image[i,:,:]
-    #     channel = wiener_filter(channel, psf, K=hyps['K'])
-    #     final[i,:,:] = torch.Tensor(channel)
 
-    final = blurred_image
-    blurred_image = Variable(final, requires_grad=True)
-    blurred_image = blurred_image.unsqueeze(0)  # specify a batch size of 1
-    print('Image shape: ', blurred_image.shape)
-    return blurred_image.cuda(), image.cuda()
+    final = optics.wiener_filter(blurred_image, psf, K=K)
+    print('K: ', K)
+    final = final.unsqueeze(0)
+    print('Image shape: ', final.shape)
+    return final.cuda(), image.cuda()
+
+
+def get_lr(optimizer):
+    for param_group in optimizer.param_groups:
+        return param_group['lr']
 
 
 def get_exp_num(file_path, exp_name):
@@ -123,41 +146,59 @@ def train(hyps, model, dataset):
     os.makedirs(run_dir, exist_ok=True)
 
     optimizer = torch.optim.Adam(model.parameters(), lr=hyps['lr'])
+    scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min',
+                                                           patience=8,
+                                                           threshold=5e-3,
+                                                           factor=0.8)
     writer = SummaryWriter(run_dir)  # run directory for tensorboard information
     iter = 0
 
-    writer.add_scalar("learning_rate", hyps['lr'], 0)
 
     print('Beginning training...')
+    if hyps['single_image']:
+        print('Optimizing over a single image...')
     for epoch in range(hyps['max_epoch']):
         for model_input, ground_truth in dataloader:
+            if hyps['single_image']:
+                model_input, ground_truth = image_loader('lamb.png')
 
             ground_truth = ground_truth.cuda()
             model_input = model_input.cuda()
 
             model_outputs = model(model_input)
-            # model.write_updates(writer, model_outputs, ground_truth, model_input, iter)
+
+            model.write_updates(writer, model_outputs, ground_truth, model_input, iter)
 
             optimizer.zero_grad()
+
+            psf = optics.heightmap_to_psf(hyps, model.get_heightmap())
+            plt.figure()
+            plt.imshow(psf)
+            plt.colorbar()
+            fig = plt.gcf()
+            plt.close()
 
             dist_loss = model.get_distortion_loss(model_outputs, ground_truth)
             reg_loss = model.get_regularization_loss(model_outputs, ground_truth)
 
             total_loss = dist_loss + hyps['reg_weight'] * reg_loss
 
-            PSNR = model.get_psnr(model_outputs, ground_truth)
             K = model.get_damp()
+            heightmap = model.get_heightmap_fig()
 
             total_loss.backward()
             optimizer.step()
+            scheduler.step(total_loss)
 
             print("Iter %07d   Epoch %03d   dist_loss %0.4f reg_loss %0.4f" %
                   (iter, epoch, dist_loss, reg_loss * hyps['reg_weight']))
 
             writer.add_scalar("scaled_regularization_loss", reg_loss * hyps['reg_weight'], iter)
             writer.add_scalar("distortion_loss", dist_loss, iter)
-            writer.add_scalar("PSNR", PSNR, iter)
             writer.add_scalar("damp", K, iter)
+            writer.add_figure("heightmap", heightmap, iter)
+            writer.add_figure("psf", fig, iter)
+            writer.add_scalar("learning_rate", get_lr(optimizer), iter)
 
             if not iter:  # on the first iteration
                 # Save parameters used into the log directory.
@@ -177,8 +218,8 @@ def train(hyps, model, dataset):
 
 def test(hyps, model):
     # load later in training
-    epoch = 7
-    iter = 15000
+    epoch = 16
+    iter =36000
     hyps['exp_num'] = 0
     dir_name = "{}/{}_{}".format(hyps['exp_name'], hyps['exp_name'], hyps['exp_num'])
     run_dir = os.path.join(hyps['logging_root'], dir_name)
@@ -187,7 +228,8 @@ def test(hyps, model):
 
     model.load_state_dict(torch.load(path_to_model))
     model.eval()
-    model_input, ground_truth = image_loader('2008_000027_val.jpg', hyps)
+
+    model_input, ground_truth = image_loader_blur('2008_000027_val.jpg', hyps, model.K)
 
     ground_rgb = torch.Tensor(linear_to_srgb(ground_truth.cpu()))
     save_image(ground_rgb, "val/truth_val.png")
@@ -219,12 +261,10 @@ def main():
     print("Hyperparameters:")
     print(hyps_str)
 
-    # hyps['psf'] = psf_utils.get_psf(hyps)
-
     os.makedirs(hyps['data_root'], exist_ok=True)
     dataset = NoisySBDataset(data_root=hyps['data_root'], hyps=hyps)
     model = DenoisingUnet(img_sidelength=512, hyps=hyps)
-    # test(hyps, model)
+    #test(hyps, model)
     train(hyps, model, dataset)
 
 

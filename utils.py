@@ -5,7 +5,6 @@ Author: Nitish Padmanaban
 
 import numpy as np
 import torch
-import torch.nn as nn
 
 
 def stack_complex(real_mag, imag_phase):
@@ -320,38 +319,3 @@ def crop_larger_dims(field, target_shape, pytorch=True, stacked=True):
     else:
         return field
 
-
-def psf2otf(input_filter, output_size):
-    '''
-    Convert pytorch tensor filter into its FFT
-    Input:
-        input_filter: tensor (height, width)
-        output_size: (height, width, num_channels) of image
-    Output:
-        otf of size output size
-    '''
-    fh,fw = input_filter.shape
-
-    padder = nn.ZeroPad2d((0, output_size[1]-fw, 0, output_size[0]-fh))
-    padded_filter = padder(input_filter)
-
-    # shift left
-    left = padded_filter[:,0:(fw-1)//2]
-    right = padded_filter[:,(fw-1)//2:]
-    padded = torch.cat([right, left], 1)
-
-    # shift down
-    up = padded[0:(fh-1)//2,:]
-    down = padded[(fh-1)//2:,:]
-    padded = torch.cat([down, up], 0)
-
-    tmp = stack_complex(torch.real(padded), torch.imag(padded))
-    tmp = torch.fft(tmp,2)
-    return tmp
-
-def abs_complex(input_field):
-    final = torch.zeros(input_field.shape)
-    real,imag = unstack_complex(input_field)
-    final[:,:,0] = real ** 2 + imag ** 2
-    final[:,:,1] = torch.zeros(input_field.shape[0:2])
-    return final
