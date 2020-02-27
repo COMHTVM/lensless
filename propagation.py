@@ -574,7 +574,7 @@ class FresnelPropagation(NearFieldTransferFnPropagationBase):
 
         samples_fx, samples_fy = np.meshgrid(coords_fx, coords_fy)
 
-        forward_phases = (np.pi * self.propagation_distance * self.wavelength
+        forward_phases = (np.pi * -self.propagation_distance * self.wavelength
                           * (samples_fx**2 + samples_fy**2))
 
         forward = np.exp(1j * forward_phases)
