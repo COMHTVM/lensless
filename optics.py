@@ -59,7 +59,6 @@ def circular_aperture(input_field, r_cutoff):
     :param r_cutoff: int or None - radius cutoff for incoming light field
     :return: Light field filtered by the aperture
     """
-    input_field = input_field.numpy()
     input_shape = input_field.shape
     [x, y] = np.mgrid[-(input_shape[0] // 2): (input_shape[0] + 1) // 2,
              -(input_shape[1] // 2):(input_shape[1] + 1) // 2].astype(np.float64)
@@ -78,7 +77,7 @@ def propagate_through_lens(input_field, phase_delay):
 
     input_field = utils.stack_complex(input_field,
                                       torch.zeros(input_field.shape))
-    return utils.mul_complex(input_field, phase_delay)
+    return utils.mul_complex(input_field.cpu(), phase_delay.cpu())
 
 
 def propagate_fresnel(field, distance, wavelength, resolution, pixel_pitch):
@@ -93,7 +92,7 @@ def propagate_fresnel(field, distance, wavelength, resolution, pixel_pitch):
     """
     pixel_pitch = [pixel_pitch, pixel_pitch]
     resolution = [resolution, resolution]
-    element = Propagation(kernel_type='fresnel_conv',
+    element = Propagation(kernel_type='fresnel',
                           propagation_distances=distance,
                           slm_resolution=resolution,
                           slm_pixel_pitch=pixel_pitch,

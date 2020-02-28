@@ -6,6 +6,8 @@ from pytorch_prototyping.pytorch_prototyping import *
 import matplotlib.pyplot as plt
 import torch.nn
 import optics
+from propagation import Propagation
+import sys
 
 
 def num_divisible_by_2(number):
@@ -35,51 +37,69 @@ class ConvolveImage(nn.Module):
         input_field = torch.ones((self.resolution, self.resolution))
         saveflag = False
 
-        # heightmap = self.heightmap.pow(2)  # learn the sqrt of the heightmap
-        heightmap = self.heightmap
         if saveflag:
             plt.figure()
-            plt.imshow(heightmap.data.cpu().numpy())
+            plt.imshow(self.heightmap.data.cpu().numpy())
             plt.colorbar()
-            plt.savefig('heightmap_test')
+            plt.savefig('t-phase_delay')
             plt.close()
 
-        phase_delay = utils.heightmap_to_phase(heightmap, self.wavelength, self.refractive_idc)
+        phase_delay = utils.heightmap_to_phase(self.heightmap,
+                                               self.wavelength,
+                                               self.refractive_idc)
 
+        # if saveflag:
+        #     plt.figure()
+        #     plt.imshow(phase_delay.data.cpu().numpy())
+        #     plt.colorbar()
+        #     plt.savefig('t-phase_delay')
+        #     plt.close()
+        #
         field = optics.propagate_through_lens(input_field, phase_delay)
 
+        # if saveflag:
+        #     plt.figure()
+        #     plt.imshow(field[:,:,0].data.cpu().numpy())
+        #     plt.colorbar()
+        #     plt.savefig('t-prop thru')
+        #     plt.close()
+        #
         field = optics.circular_aperture(field, self.r_cutoff)
+        #
+        # # propagate field from aperture to sensor
 
-        field = utils.stack_complex(field, torch.zeros(field.shape))
+        # kernel_type = 'fresnel_conv' -> nans
+        element = Propagation(kernel_type='fresnel',
+                              propagation_distances=self.focal_length,
+                              slm_resolution=[self.resolution, self.resolution],
+                              slm_pixel_pitch=[self.pixel_pitch, self.pixel_pitch],
+                              wavelength=self.wavelength)
 
-        # propagate field from aperture to sensor
-        field = optics.propagate_fresnel(field,
-                                         distance=self.focal_length,
-                                         wavelength=self.wavelength,
-                                         resolution=self.resolution,
-                                         pixel_pitch=self.pixel_pitch)
+        field = element.forward(field)
 
         psf = utils.field_to_intensity(field)
-
-        if saveflag:
-            plt.figure()
-            plt.imshow(psf.data.cpu().numpy())
-            plt.colorbar()
-            plt.savefig('psfcrop_test')
-            plt.close()
-
+        #
+        # if saveflag:
+        #     plt.figure()
+        #     plt.imshow(psf.data.cpu().numpy())
+        #     plt.colorbar()
+        #     plt.savefig('t-psf')
+        #     plt.close()
+        #
+        #
         psf /= psf.sum()
-
+        #
         final = optics.convolve_img(x, psf)
+        #
+        # if saveflag:
+        #     plt.figure()
+        #     img = final.data.cpu()
+        #     img = torch.squeeze(img, 0)
+        #     img = img.permute(1, 2, 0).numpy()
+        #     plt.imshow(img)
+        #     plt.savefig('t-final')
+        #     plt.close()
 
-        if saveflag:
-            plt.figure()
-            img = final.data.cpu()
-            img = torch.squeeze(img, 0)
-            img = img.permute(1, 2, 0).numpy()
-            plt.imshow(img)
-            plt.savefig('final_test')
-            plt.close()
         return final.cuda()
 
 
@@ -110,11 +130,6 @@ class DenoisingUnet(nn.Module):
                  img_sidelength, hyps):
         super().__init__()
 
-        # psf_file = hyps['psf_file']
-        # psf = torch.Tensor(np.load(psf_file))
-        # psf /= psf.sum()
-        # self.psf = psf
-
         self.norm = nn.InstanceNorm2d
         self.img_sidelength = img_sidelength
 
@@ -127,13 +142,12 @@ class DenoisingUnet(nn.Module):
         else:
             self.K = hyps['K']
 
-
         init_heightmap = optics.heightmap_initializer(focal_length=hyps['focal_length'],
                                                       resolution=hyps['resolution'],
                                                       pixel_pitch=hyps['pixel_pitch'],
                                                       refractive_idc=hyps['refractive_idc'],
                                                       init_fresnel=hyps['init_fresnel'])
-        self.heightmap = nn.Parameter(init_heightmap)
+        self.heightmap = nn.Parameter(init_heightmap, requires_grad=True)
 
         # torch.random.manual_seed(0)
 
@@ -155,7 +169,7 @@ class DenoisingUnet(nn.Module):
         self.denoising_net = nn.Sequential(*modules)
 
         # Losses
-        self.loss = nn.MSELoss(reduction='mean')
+        self.loss = nn.MSELoss()
 
         # List of logs
         self.counter = 0  # A counter to enable logging every nth iteration

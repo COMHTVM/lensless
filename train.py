@@ -1,4 +1,4 @@
-import os, datetime
+import os
 import torch
 import json
 from dataio import *
@@ -8,24 +8,20 @@ from denoising_unet import DenoisingUnet
 from torch.utils.tensorboard import SummaryWriter
 from torchvision.utils import save_image
 import torchvision.transforms as transforms
-from torch.autograd import Variable
 from PIL import Image
 import matplotlib.pyplot as plt
 import sys
 import numpy as np
-import math
-from propagation import Propagation
 import torch.nn
 import optics
 
 device = torch.device('cuda')
 
 def load_json(file_name):
-    '''
-    Input: file_name str - path to json file
-    ---
-    Output: json file loaded into python dict
-    '''
+    """
+    :param file_name: str - path to json file
+    :return: json file loaded into python dict
+    """
     file_name = os.path.expanduser(file_name)
     with open(file_name) as f:
         s = f.read()
@@ -57,9 +53,10 @@ def image_loader(img_name):
     ---
     Output: Variable tensor of image of the format (1,C,H,W)
     '''
-    loader = transforms.Compose([transforms.CenterCrop(size=(1248,1248)),
+    loader = transforms.Compose([transforms.CenterCrop(size=(500,500)),
                                  transforms.Resize(size=(2496,2496)),
                                  transforms.ToTensor()])
+    loader = transforms.Compose([transforms.ToTensor()])
 
     image = Image.open(img_name)
     image = loader(image).float().cpu()
@@ -85,7 +82,7 @@ def image_loader_blur(img_name,hyps, K):
     image = torch.Tensor(srgb_to_linear(image))
     psf = torch.Tensor(np.load(hyps['psf_file']))
     psf /= psf.sum()
-    blurred_image = convolve_img(image, psf)
+    blurred_image = optics.convolve_img(image, psf)
 
     blurred_rgb = torch.Tensor(linear_to_srgb(torch.squeeze(blurred_image,0)))
     save_image(blurred_rgb, "val/blurred_val.png")
@@ -103,11 +100,13 @@ def get_lr(optimizer):
 
 
 def get_exp_num(file_path, exp_name):
-    '''
+    """
     Find the next open experiment ID number.
     exp_name: str path to the main experiment folder that contains the model folder
-    ex: runs/fresnel50/
-    '''
+    :param file_path: str - path to folder
+    :param exp_name: str - name of exp
+    :return: e.g. runs/fresnel50/
+    """
     exp_folder = os.path.expanduser(file_path)
     _, dirs, _ = next(os.walk(exp_folder))
     exp_nums = set()
@@ -160,25 +159,25 @@ def train(hyps, model, dataset):
     for epoch in range(hyps['max_epoch']):
         for model_input, ground_truth in dataloader:
             if hyps['single_image']:
-                model_input, ground_truth = image_loader('lamb.png')
+                model_input, ground_truth = image_loader('data/penguin1000x1000.png')
 
             ground_truth = ground_truth.cuda()
             model_input = model_input.cuda()
 
             model_outputs = model(model_input)
-
             model.write_updates(writer, model_outputs, ground_truth, model_input, iter)
 
             optimizer.zero_grad()
 
-            psf = optics.heightmap_to_psf(hyps, model.get_heightmap())
-            plt.figure()
-            plt.imshow(psf)
-            plt.colorbar()
-            fig = plt.gcf()
-            plt.close()
+            # psf = optics.heightmap_to_psf(hyps, model.get_heightmap())
+            # plt.figure()
+            # plt.imshow(psf)
+            # plt.colorbar()
+            # fig = plt.gcf()
+            # plt.close()
 
             dist_loss = model.get_distortion_loss(model_outputs, ground_truth)
+
             reg_loss = model.get_regularization_loss(model_outputs, ground_truth)
 
             total_loss = dist_loss + hyps['reg_weight'] * reg_loss
@@ -197,7 +196,7 @@ def train(hyps, model, dataset):
             writer.add_scalar("distortion_loss", dist_loss, iter)
             writer.add_scalar("damp", K, iter)
             writer.add_figure("heightmap", heightmap, iter)
-            writer.add_figure("psf", fig, iter)
+            #writer.add_figure("psf", fig, iter)
             writer.add_scalar("learning_rate", get_lr(optimizer), iter)
 
             if not iter:  # on the first iteration
