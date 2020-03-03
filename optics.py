@@ -8,6 +8,7 @@ import torch
 import numpy as np
 from propagation import Propagation
 import torch.nn
+import optics
 
 
 def wiener_filter(img, psf, K):
@@ -72,6 +73,12 @@ def circular_aperture(input_field, r_cutoff):
 
 
 def propagate_through_lens(input_field, phase_delay):
+    """
+    Provides complex valued wave field upon hitting an optical element
+    :param input_field: (H,W) tensor of phase delay of optical element
+    :param phase_delay: (H,W) tensor of incoming light field
+    :return: (H,W,2) complex valued incident light field
+    """
     real, imag = utils.polar_to_rect(1, phase_delay)
     phase_delay = utils.stack_complex(real, imag)
 
@@ -82,13 +89,13 @@ def propagate_through_lens(input_field, phase_delay):
 
 def propagate_fresnel(field, distance, wavelength, resolution, pixel_pitch):
     """
-    Wrapper function for Fresnel propagation
+    Wrapper function for Fresnel propagation (use kernel type 'fresnel'
+    or 'fresnel conv'
     :param field: incoming light field (B,C,H,W,2)
     :param distance: focal length, distance from DOE to sensor
     :param wavelength: wavelength of light to propagate
     :param resolution: resolution of image plane
     :param pixel_pitch: size of pixel
-    :return:
     """
     pixel_pitch = [pixel_pitch, pixel_pitch]
     resolution = [resolution, resolution]
@@ -139,18 +146,28 @@ def fspecial_gauss(size, sigma):
     return torch.Tensor(g/g.sum())
 
 
-def heightmap_initializer(focal_length, resolution,
-                          pixel_pitch, refractive_idc,
-                          init_fresnel=False):
-    if init_fresnel:
-        fresnel = np.load('fresnel_phasemap_50mm.npy')
-        fresnel = torch.Tensor(fresnel)
-        heightmap = utils.phase_to_heightmap(fresnel, 530e-9, refractive_idc)
+def heightmap_initializer(focal_length,
+                          resolution=1248,
+                          pixel_pitch=6.4e-6,
+                          refractive_idc=1.43,
+                          wavelength=530e-9,
+                          init_lens='fresnel'):
+    """
+    Initialize heightmap before training
+    :param focal_length: float - distance between phase mask and sensor
+    :param resolution: int - size of phase mask
+    :param pixel_pitch: float - pixel size of phase mask
+    :param refractive_idc: float - refractive index of phase mask
+    :param wavelength: float - wavelength of light
+    :param init_lens: str - type of lens to initialize
+    :return:
+    """
 
-    else:
+    if init_lens == 'fresnel' or init_lens == 'plano':
         convex_radius = (refractive_idc - 1.) * focal_length  # based on lens maker formula
 
-        N, M = resolution
+        N = resolution
+        M = resolution
         [x, y] = np.mgrid[-(N // 2): (N + 1) // 2,
                  -(M // 2):(M + 1) // 2].astype(np.float64)
 
@@ -158,7 +175,21 @@ def heightmap_initializer(focal_length, resolution,
         y = y * pixel_pitch
 
         # get lens thickness by paraxial approximations
-        height_map = -(x ** 2 + y ** 2) / 2. * (1. / convex_radius)
+        heightmap = -(x ** 2 + y ** 2) / 2. * (1. / convex_radius)
+        if init_lens == 'fresnel':
+            phases = utils.heightmap_to_phase(heightmap, wavelength, refractive_idc)
+            fresnel = optics.simple_to_fresnel_lens(phases)
+            heightmap = utils.phase_to_heightmap(fresnel, wavelength, refractive_idc)
+
+    else:
+        heightmap = torch.rand((resolution, resolution)) * pixel_pitch
+        gauss_filter = fspecial_gauss(10, 5)
+
+        heightmap = utils.stack_complex(torch.real(heightmap), torch.imag(heightmap))
+        gauss_filter = utils.stack_complex(torch.real(gauss_filter), torch.imag(gauss_filter))
+        heightmap = utils.conv_fft(heightmap, gauss_filter)
+        heightmap = heightmap[:,:,0]
+
     return torch.Tensor(heightmap)
 
 
@@ -167,7 +198,7 @@ def psf2otf(input_filter, output_size):
     Converts PSF to OTF that is same size as output_size
     :param input_filter: (H,W) PSF
     :param output_size: [int, int] - size of output filter
-    :return: OTF
+    :return: OTF (H,W)
     """
     fh,fw = input_filter.shape
 
@@ -192,7 +223,8 @@ def psf2otf(input_filter, output_size):
 def abs_complex(input_field):
     """
     Takes absolute value of complex input field
-    :param input_field: tensor of size (B,C,H,W,2), last dimension is real and imag
+    :param input_field: tensor of size (B,C,H,W,2), last dimension is
+    real and imag
     :return: absolute value of complex tensor (B,C,H,W,2)
     """
     real, imag = utils.unstack_complex(input_field)
@@ -202,5 +234,11 @@ def abs_complex(input_field):
 
 
 def simple_to_fresnel_lens(phase_delay):
+    """
+    Converts a plano convex lens phase delay to a Fresnel phase delay
+    through 2*pi phase wrapping
+    :param phase_delay: (H,W) phase delay of plano convex lens
+    :return: phase delay of a Fresnel lens
+    """
     phase_delay -= phase_delay.min()
     return (phase_delay) % (2 * np.pi) - 2 * np.pi

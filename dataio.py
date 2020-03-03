@@ -20,10 +20,9 @@ class NoisySBDataset():
                  hyps):
         super().__init__()
 
-        self.psf_file = hyps['psf_file']
         self.transforms = Compose([
-            CenterCrop(size=(256, 256)),
-            Resize(size=(512, 512)),
+            CenterCrop(size=(256)),
+            Resize(size=(512,512)),
             ToTensor()
         ])
         self.K = hyps['K']

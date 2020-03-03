@@ -31,42 +31,17 @@ class ConvolveImage(nn.Module):
         self.pixel_pitch = hyps['pixel_pitch']
         self.refractive_idc = hyps['refractive_idc']
         self.heightmap = heightmap
-        self.target_side_length = hyps['target_side_length']
 
     def forward(self, x):
         input_field = torch.ones((self.resolution, self.resolution))
-        saveflag = False
-
-        if saveflag:
-            plt.figure()
-            plt.imshow(self.heightmap.data.cpu().numpy())
-            plt.colorbar()
-            plt.savefig('t-phase_delay')
-            plt.close()
 
         phase_delay = utils.heightmap_to_phase(self.heightmap,
                                                self.wavelength,
                                                self.refractive_idc)
 
-        # if saveflag:
-        #     plt.figure()
-        #     plt.imshow(phase_delay.data.cpu().numpy())
-        #     plt.colorbar()
-        #     plt.savefig('t-phase_delay')
-        #     plt.close()
-        #
         field = optics.propagate_through_lens(input_field, phase_delay)
 
-        # if saveflag:
-        #     plt.figure()
-        #     plt.imshow(field[:,:,0].data.cpu().numpy())
-        #     plt.colorbar()
-        #     plt.savefig('t-prop thru')
-        #     plt.close()
-        #
         field = optics.circular_aperture(field, self.r_cutoff)
-        #
-        # # propagate field from aperture to sensor
 
         # kernel_type = 'fresnel_conv' -> nans
         element = Propagation(kernel_type='fresnel',
@@ -76,38 +51,20 @@ class ConvolveImage(nn.Module):
                               wavelength=self.wavelength)
 
         field = element.forward(field)
-
         psf = utils.field_to_intensity(field)
-        #
-        # if saveflag:
-        #     plt.figure()
-        #     plt.imshow(psf.data.cpu().numpy())
-        #     plt.colorbar()
-        #     plt.savefig('t-psf')
-        #     plt.close()
-        #
-        #
+
         psf /= psf.sum()
-        #
+
         final = optics.convolve_img(x, psf)
-        #
-        # if saveflag:
-        #     plt.figure()
-        #     img = final.data.cpu()
-        #     img = torch.squeeze(img, 0)
-        #     img = img.permute(1, 2, 0).numpy()
-        #     plt.imshow(img)
-        #     plt.savefig('t-final')
-        #     plt.close()
 
         return final.cuda()
 
 
 class WienerFilter(nn.Module):
-    ''' Perform Wiener Filtering with learnable damping factor
+    """Perform Wiener Filtering with learnable damping factor
     if you put in a preloaded psf this works, if you try to
-    heightmap_to_psf, it's not on cuda
-    '''
+    heightmap_to_psf, it's not on CUDA
+    """
 
     def __init__(self, hyps, heightmap, K):
         super(WienerFilter, self).__init__()
@@ -119,12 +76,9 @@ class WienerFilter(nn.Module):
 
 
 class DenoisingUnet(nn.Module):
-    '''A simple unet-based denoiser. This class is overly
-    complicated for what it's accomplishing, because it
-    serves as an example model class for more complicated models.
-
+    """U-Net-based deconvolution
     Assumes images are scaled from -1 to 1.
-    '''
+    """
 
     def __init__(self,
                  img_sidelength, hyps):
@@ -146,7 +100,9 @@ class DenoisingUnet(nn.Module):
                                                       resolution=hyps['resolution'],
                                                       pixel_pitch=hyps['pixel_pitch'],
                                                       refractive_idc=hyps['refractive_idc'],
-                                                      init_fresnel=hyps['init_fresnel'])
+                                                      wavelength=hyps['wavelength'],
+                                                      init_lens=hyps['init_lens'])
+
         self.heightmap = nn.Parameter(init_heightmap, requires_grad=True)
 
         # torch.random.manual_seed(0)
@@ -207,8 +163,9 @@ class DenoisingUnet(nn.Module):
 
         imageio.imwrite(path, output)
 
-    def write_updates(self, writer, predictions, ground_truth, input, iter):
-        '''Writes out tensorboard summaries as logged in self.logs.'''
+
+    def write_updates(self, writer, predictions, ground_truth, input, iter, hyps):
+        '''Writes out tensorboard scalar and figures.'''
         batch_size, _, _, _ = predictions.shape
         ground_truth = ground_truth.cuda()
 
@@ -220,6 +177,17 @@ class DenoisingUnet(nn.Module):
         writer.add_image("Output_vs_gt", grid, iter)
 
         writer.add_scalar("psnr", self.get_psnr(predictions, ground_truth), iter)
+        writer.add_scalar("damp", self.get_damp(), iter)
+        writer.add_figure("heightmap", self.get_heightmap_fig(), iter)
+
+        psf = optics.heightmap_to_psf(hyps, self.get_heightmap())
+        plt.figure()
+        plt.imshow(psf)
+        plt.colorbar()
+        fig = plt.gcf()
+        plt.close()
+        writer.add_figure("psf", fig, iter)
+
 
     def get_psnr(self, predictions, ground_truth):
         '''Calculates the PSNR of the model's prediction.'''
