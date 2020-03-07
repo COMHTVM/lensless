@@ -12,47 +12,50 @@ import optics
 
 
 def wiener_filter(img, psf, K):
-    ''' Performs Wiener filtering on a single channel
+    """ Performs Wiener filtering on a single channel
     :param img: pytorch tensor of image (N,C,H,W)
     :param psf: pytorch tensor of psf (H,W)
     :param K: damping factor (can be input through hyps or learned)
     :return: Wiener filtered image in one channel (N,C,H,W)
-    '''
+    """
     img = img.cuda()
     psf = psf.cuda()
-    img = utils.stack_complex(img, torch.zeros(img.shape).cuda())
+    imag = torch.zeros(img.shape).cuda()
+    img = utils.stack_complex(img,imag)
     img_fft = torch.fft(utils.ifftshift(img),2)
+    img_fft = img_fft.cuda()
 
     otf = psf2otf(psf, output_size=img.shape[2:4])
     otf = torch.stack((otf,otf,otf),0)
     otf = torch.unsqueeze(otf, 0)
 
     conj_otf = utils.conj(otf)
-    denominator = abs_complex(otf)
-    denominator[:,:,:,:,0] += K
 
     otf_img = utils.mul_complex(conj_otf,img_fft)
-    product = utils.div_complex(otf_img, denominator)
-    filtered = utils.ifftshift(torch.ifft(product,2))
-    filtered = torch.clamp(filtered, min=1e-5)
 
-    return filtered[:,:,:,:,0]
+    denominator = abs_complex(otf)
+    denominator[:, :, :, :, 0] += K
+    product = utils.div_complex(otf_img, denominator)
+    # filtered = utils.ifftshift(torch.ifft(product,2))
+    # filtered = torch.clamp(filtered, min=1e-5)
+
+    return otf_img[:,:,:,:,0]
+    #return filtered[:,:,:,:,0]
 
 
 def convolve_img(image, psf):
-    ''' Convolves image with a PSF kernel, convolves on each color channel
+    """Convolves image with a PSF kernel, convolves on each color channel
     :param image: pytorch tensor of image (B,N,H,W)
     :param psf: pytorch tensor of psf (H,W)
     :return: final convolved image (B,N,H,W)
-    '''
+    """
     image = image.cpu()
     psf = torch.stack((psf, psf, psf), 0)
     psf = torch.unsqueeze(psf, 0)
     psf_stack = utils.stack_complex(psf, torch.zeros(psf.shape))
     img_stack = utils.stack_complex(image, torch.zeros(image.shape))
     convolved = utils.conv_fft(img_stack, psf_stack, padval=0)
-    return utils.field_to_intensity(convolved)
-
+    return convolved[:,:,:,:,0]
 
 def circular_aperture(input_field, r_cutoff):
     """
@@ -87,26 +90,6 @@ def propagate_through_lens(input_field, phase_delay):
     return utils.mul_complex(input_field.cpu(), phase_delay.cpu())
 
 
-def propagate_fresnel(field, distance, wavelength, resolution, pixel_pitch):
-    """
-    Wrapper function for Fresnel propagation (use kernel type 'fresnel'
-    or 'fresnel conv'
-    :param field: incoming light field (B,C,H,W,2)
-    :param distance: focal length, distance from DOE to sensor
-    :param wavelength: wavelength of light to propagate
-    :param resolution: resolution of image plane
-    :param pixel_pitch: size of pixel
-    """
-    pixel_pitch = [pixel_pitch, pixel_pitch]
-    resolution = [resolution, resolution]
-    element = Propagation(kernel_type='fresnel',
-                          propagation_distances=distance,
-                          slm_resolution=resolution,
-                          slm_pixel_pitch=pixel_pitch,
-                          wavelength=wavelength)
-    return element.forward(field)
-
-
 def heightmap_to_psf(hyps, height_map):
     resolution = hyps['resolution']
     focal_length = hyps['focal_length']
@@ -117,21 +100,24 @@ def heightmap_to_psf(hyps, height_map):
 
     input_field = torch.ones((resolution,resolution))
 
-    phase_delay = utils.heightmap_to_phase(height_map, wavelength, refractive_idc)
+    phase_delay = utils.heightmap_to_phase(height_map,
+                                           wavelength,
+                                           refractive_idc)
 
     field = propagate_through_lens(input_field, phase_delay)
 
     field = circular_aperture(field, r_cutoff)
 
     # propagate field from aperture to sensor
-    field = propagate_fresnel(field,
-                              distance=focal_length,
-                              wavelength=wavelength,
-                              resolution=resolution,
-                              pixel_pitch=pixel_pitch)
+    element = Propagation(kernel_type='fresnel',
+                          propagation_distances=focal_length,
+                          slm_resolution=[resolution, resolution],
+                          slm_pixel_pitch=[pixel_pitch, pixel_pitch],
+                          wavelength=wavelength)
+    field = element.forward(field)
     psf = utils.field_to_intensity(field)
     psf /= psf.sum()
-    return psf
+    return psf.cuda()
 
 
 def fspecial_gauss(size, sigma):
@@ -217,7 +203,7 @@ def psf2otf(input_filter, output_size):
 
     tmp = utils.stack_complex(padded.cuda(), torch.zeros(padded.shape).cuda())
     tmp = torch.fft(tmp,2)
-    return tmp
+    return tmp.cuda()
 
 
 def abs_complex(input_field):

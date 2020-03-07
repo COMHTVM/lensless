@@ -2,7 +2,6 @@ import os
 import torch
 import json
 from dataio import *
-import utils
 from torch.utils.data import DataLoader
 from denoising_unet import DenoisingUnet
 from torch.utils.tensorboard import SummaryWriter
@@ -17,7 +16,7 @@ import optics
 import time
 from queue import Queue
 
-device = torch.device('cuda')
+DEVICE = torch.device('cuda')
 
 def load_json(file_name):
     """ Loads a JSON file into a dictionary
@@ -40,7 +39,7 @@ def image_loader(img_name):
     loader = transforms.Compose([transforms.CenterCrop(size=(1250,1250)),
                                  transforms.Resize(size=(2496,2496)),
                                  transforms.ToTensor()])
-    loader = transforms.Compose([transforms.CenterCrop(size=(1248,1248)),
+    loader = transforms.Compose([transforms.CenterCrop(size=(512,512)),
                                  transforms.ToTensor()])
 
     image = Image.open(img_name)
@@ -89,9 +88,8 @@ def get_exp_num(file_path, exp_name):
 def train(hyps):
     torch.cuda.empty_cache()
 
-    dataset = NoisySBDataset(data_root=hyps['data_root'], hyps=hyps)
-    model = DenoisingUnet(img_sidelength=hyps['resolution'], hyps=hyps)
-
+    dataset = NoisySBDataset(hyps=hyps)
+    model = DenoisingUnet(hyps=hyps)
 
     dataloader = DataLoader(dataset, batch_size=hyps['batch_size'])
     print('Data loader size: ', len(dataloader))
@@ -118,9 +116,9 @@ def train(hyps):
 
     optimizer = torch.optim.Adam(model.parameters(), lr=hyps['lr'])
     scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min',
-                                                           patience=5,
+                                                           patience=10,
                                                            threshold=2e-3,
-                                                           factor=0.8)
+                                                           factor=0.7)
     writer = SummaryWriter(run_dir)  # run directory for tensorboard information
     iter = 0
 
@@ -132,8 +130,10 @@ def train(hyps):
     # early stopping criteria
     prev_loss = 1000
     stop_count = 0
-    tolerance = 1e-2
-    early_stop = 100
+    tolerance = 1e-3
+    early_stop = 600
+    epoch_loss = 0
+    psnr = 0
 
     for epoch in range(hyps['max_epoch']):
         for model_input, ground_truth in dataloader:
@@ -152,6 +152,8 @@ def train(hyps):
             reg_loss = model.get_regularization_loss(model_outputs, ground_truth)
 
             total_loss = dist_loss + hyps['reg_weight'] * reg_loss
+            epoch_loss += total_loss
+            psnr = model.get_psnr(model_outputs, ground_truth)
 
             total_loss.backward()
             optimizer.step()
@@ -177,57 +179,41 @@ def train(hyps):
                 # Save parameters used into the log directory.
                 results_file = run_dir + "/params.txt"
                 with open(results_file, 'a') as f:
-                    f.write("Hyperparameters: \n")
                     for k in hyps.keys():
                         f.write(str(k) + ": " + str(hyps[k]) + '\n')
                     f.write("\n")
 
+
             iter += 1
-            if iter % 100 == 0:  # used to be 10,000
-                torch.save(model.state_dict(), os.path.join(run_dir, 'model-epoch_%d_iter_%s.pth' % (epoch, iter)))
+            if iter % 10 == 0:  # used to be 10,000
+                save_dict = {
+                    "model_state_dict": model.state_dict(),
+                    "optim_state_dict": optimizer.state_dict(),
+                    "heightmap": model.get_heightmap().numpy(),
+                    "psf": model.get_psf(hyps),
+                    "epoch": epoch,
+                    "iter": iter,
+                    "hyps": hyps,
+                    "avg_loss": epoch_loss/iter,
+                    "loss": total_loss,
+                    "psnr": psnr,
+                    "K": model.get_damp()
+                }
+
+                for k in hyps.keys():
+                    if k not in save_dict:
+                        save_dict[k] = hyps[k]
+
+                torch.save(save_dict, os.path.join(run_dir, 'model_epoch_%d_iter_%s.pth' % (epoch, iter)))
 
         if stop_count >= early_stop:
             break
-    torch.save(model.state_dict(), os.path.join(run_dir, 'model-epoch_%d_iter_%s.pth' % (epoch, iter)))
+    torch.save(save_dict, os.path.join(run_dir, 'model_epoch_%d_iter_%s.pth' % (epoch, iter)))
 
     results = {"epoch": epoch,
                "iter": iter,
                "loss": total_loss}
     return results
-
-
-
-def test(hyps, model):
-    # load later in training
-    epoch = 16
-    iter =36000
-    hyps['exp_num'] = 0
-    dir_name = "{}/{}_{}".format(hyps['exp_name'], hyps['exp_name'], hyps['exp_num'])
-    run_dir = os.path.join(hyps['logging_root'], dir_name)
-    path_to_model = os.path.join(run_dir, 'model-epoch_%d_iter_%s.pth' % (epoch, iter))
-    print('Loading ', path_to_model)
-
-    model.load_state_dict(torch.load(path_to_model))
-    model.eval()
-
-    model_input, ground_truth = image_loader_blur('2008_000027_val.jpg', hyps, model.K)
-
-    ground_rgb = torch.Tensor(linear_to_srgb(ground_truth.cpu()))
-    save_image(ground_rgb, "val/truth_val.png")
-    ground_truth = ground_truth.unsqueeze(0)
-
-    input_rgb = torch.Tensor(linear_to_srgb(model_input.cpu().detach().numpy()))
-    save_image(input_rgb, "val/input_val.png")
-    with torch.no_grad():
-        print()
-        print('Testing on single image...')
-        model_output = model(model_input)
-
-        output_rgb = torch.Tensor(linear_to_srgb(model_output.cpu()))
-        save_image(output_rgb, "val/output_val.png")
-
-        PSNR = model.get_psnr(model_output, ground_truth)
-        print('PSNR: ', PSNR)
 
 
 def fill_hyper_q(hyps, ranges, keys, hyper_q, idx=0):

@@ -15,13 +15,11 @@ def srgb_to_linear(img):
 
 
 class NoisySBDataset():
-    def __init__(self,
-                 data_root,
-                 hyps):
+    def __init__(self, hyps):
         super().__init__()
 
         self.transforms = Compose([
-            CenterCrop(size=(256)),
+            CenterCrop(size=(256,256)),
             Resize(size=(512,512)),
             ToTensor()
         ])
@@ -29,7 +27,7 @@ class NoisySBDataset():
 
         # if you set download=True AND you've downloaded the files,
         # it'll never finish running :-(
-        self.dataset = torchvision.datasets.SBDataset(root=data_root,
+        self.dataset = torchvision.datasets.SBDataset(root=hyps['data_root'],
                                                       image_set=hyps['train_test'],
                                                       download=hyps['download_data'])
 
