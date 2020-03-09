@@ -1,22 +1,17 @@
 import os
-import torch
 import json
 from dataio import *
 from torch.utils.data import DataLoader
 from denoising_unet import DenoisingUnet
 from torch.utils.tensorboard import SummaryWriter
-from torchvision.utils import save_image
 import torchvision.transforms as transforms
 from PIL import Image
-import matplotlib.pyplot as plt
-import sys
-import numpy as np
 import torch.nn
-import optics
 import time
 from queue import Queue
 
 DEVICE = torch.device('cuda')
+
 
 def load_json(file_name):
     """ Loads a JSON file into a dictionary
@@ -36,15 +31,12 @@ def image_loader(img_name):
     :param img_name: str - path to single image file to load
     :return: Variable tensor of image in the format (1,C,H,W)
     """
-    loader = transforms.Compose([transforms.CenterCrop(size=(1250,1250)),
-                                 transforms.Resize(size=(2496,2496)),
-                                 transforms.ToTensor()])
     loader = transforms.Compose([transforms.CenterCrop(size=(512,512)),
                                  transforms.ToTensor()])
 
     image = Image.open(img_name)
     image = loader(image).float().cpu()
-    image = torch.Tensor(srgb_to_linear(image))
+    image = torch.Tensor(optics.srgb_to_linear(image))
     blurred_image = image.unsqueeze(0)  # specify a batch size of 1
     image = image.unsqueeze(0)
     return blurred_image.cuda(), image.cuda()
@@ -65,6 +57,7 @@ def get_exp_num(file_path, exp_name):
     Find the next open experiment ID number.
     exp_name: str path to the main experiment folder that contains the model folder
     WARNING: don't name experiments with underscores!
+
     :param file_path: str - path to folder
     :param exp_name: str - name of exp
     :return: e.g. runs/fresnel50/
@@ -88,6 +81,7 @@ def get_exp_num(file_path, exp_name):
 def train(hyps):
     torch.cuda.empty_cache()
 
+    # *** load model and data set ****
     dataset = NoisySBDataset(hyps=hyps)
     model = DenoisingUnet(hyps=hyps)
 
@@ -99,8 +93,7 @@ def train(hyps):
 
     model.cuda()
 
-    # establish folders for saving experiment
-    # make initial logging folders
+    # *** establish folders for saving experiment ***
     run_init = os.path.join(hyps['logging_root'], hyps['exp_name'])
     os.makedirs(run_init, exist_ok=True)
 
@@ -114,11 +107,12 @@ def train(hyps):
 
     os.makedirs(run_dir, exist_ok=True)
 
+    # *** set up optimizer and scheduler ***
     optimizer = torch.optim.Adam(model.parameters(), lr=hyps['lr'])
     scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min',
                                                            patience=10,
-                                                           threshold=2e-3,
-                                                           factor=0.7)
+                                                           threshold=1e-4,
+                                                           factor=0.1)
     writer = SummaryWriter(run_dir)  # run directory for tensorboard information
     iter = 0
 
@@ -128,16 +122,16 @@ def train(hyps):
         print('Optimizing over a single image...')
 
     # early stopping criteria
+    # TODO: move these params to params.json
     prev_loss = 1000
     stop_count = 0
-    tolerance = 1e-3
-    early_stop = 600
+    tolerance = 1e-4
+    early_stop = 800
     epoch_loss = 0
-    psnr = 0
 
     for epoch in range(hyps['max_epoch']):
         for model_input, ground_truth in dataloader:
-            if hyps['single_image']:
+            if hyps['single_image']: # use for testing
                 model_input, ground_truth = image_loader('data/lamb.png')
 
             ground_truth = ground_truth.cuda()
@@ -148,12 +142,11 @@ def train(hyps):
 
             optimizer.zero_grad()
 
+            psnr = model.get_psnr(model_outputs, ground_truth)
             dist_loss = model.get_distortion_loss(model_outputs, ground_truth)
             reg_loss = model.get_regularization_loss(model_outputs, ground_truth)
-
-            total_loss = dist_loss + hyps['reg_weight'] * reg_loss
+            total_loss = dist_loss # can include reg_loss in the future
             epoch_loss += total_loss
-            psnr = model.get_psnr(model_outputs, ground_truth)
 
             total_loss.backward()
             optimizer.step()
@@ -183,9 +176,8 @@ def train(hyps):
                         f.write(str(k) + ": " + str(hyps[k]) + '\n')
                     f.write("\n")
 
-
             iter += 1
-            if iter % 10 == 0:  # used to be 10,000
+            if iter % 500 == 0:  # used to be 10,000
                 save_dict = {
                     "model_state_dict": model.state_dict(),
                     "optim_state_dict": optimizer.state_dict(),
@@ -281,8 +273,8 @@ def hyper_search(hyps, ranges):
                                    for k in sorted(results.keys())])
             f.write("\n"+results+"\n")
 
-def main():
-    # load params
+if __name__ == '__main__':
+    # *** load params ***
     params_file = "params.json"
     ranges_file = "ranges.json"
     print()
@@ -304,7 +296,3 @@ def main():
     start_time = time.time()
     hyper_search(hyps, ranges)
     print("Total Execution Time: ", time.time() - start_time)
-
-
-if __name__ == '__main__':
-    main()

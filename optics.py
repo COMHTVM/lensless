@@ -8,7 +8,14 @@ import torch
 import numpy as np
 from propagation import Propagation
 import torch.nn
-import optics
+
+
+def linear_to_srgb(img):
+    return np.where(img <= 0.0031308, 12.92 * img, 1.055 * img ** (0.41666) - 0.055)
+
+
+def srgb_to_linear(img):
+    return np.where(img <= 0.04045, img / 12.92, ((img + 0.055) / 1.055) ** 2.4)
 
 
 def wiener_filter(img, psf, K):
@@ -36,11 +43,10 @@ def wiener_filter(img, psf, K):
     denominator = abs_complex(otf)
     denominator[:, :, :, :, 0] += K
     product = utils.div_complex(otf_img, denominator)
-    # filtered = utils.ifftshift(torch.ifft(product,2))
-    # filtered = torch.clamp(filtered, min=1e-5)
+    filtered = utils.ifftshift(torch.ifft(product,2))
+    filtered = torch.clamp(filtered, min=1e-5)
 
-    return otf_img[:,:,:,:,0]
-    #return filtered[:,:,:,:,0]
+    return filtered[:,:,:,:,0]
 
 
 def convolve_img(image, psf):
@@ -146,9 +152,8 @@ def heightmap_initializer(focal_length,
     :param refractive_idc: float - refractive index of phase mask
     :param wavelength: float - wavelength of light
     :param init_lens: str - type of lens to initialize
-    :return:
+    :return: height map
     """
-
     if init_lens == 'fresnel' or init_lens == 'plano':
         convex_radius = (refractive_idc - 1.) * focal_length  # based on lens maker formula
 
@@ -167,6 +172,8 @@ def heightmap_initializer(focal_length,
             fresnel = optics.simple_to_fresnel_lens(phases)
             heightmap = utils.phase_to_heightmap(fresnel, wavelength, refractive_idc)
 
+    elif init_lens == 'flat':
+        heightmap = torch.ones((resolution, resolution))*0.0001
     else:
         heightmap = torch.rand((resolution, resolution)) * pixel_pitch
         gauss_filter = fspecial_gauss(10, 5)

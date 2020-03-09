@@ -7,7 +7,6 @@ import matplotlib.pyplot as plt
 import torch.nn
 import optics
 from propagation import Propagation
-import sys
 
 
 def num_divisible_by_2(number):
@@ -22,7 +21,7 @@ def get_num_net_params(net):
 
 
 class ConvolveImage(nn.Module):
-    def __init__(self, hyps,heightmap):
+    def __init__(self, hyps, K, heightmap):
         super(ConvolveImage, self).__init__()
         self.resolution = hyps['resolution']
         self.r_cutoff = hyps['r_cutoff']
@@ -30,9 +29,12 @@ class ConvolveImage(nn.Module):
         self.focal_length = hyps['focal_length']
         self.pixel_pitch = hyps['pixel_pitch']
         self.refractive_idc = hyps['refractive_idc']
+        self.use_wiener = hyps['use_wiener']
         self.heightmap = heightmap
+        self.K = K
 
     def forward(self, x):
+        # model point from infinity
         input_field = torch.ones((self.resolution, self.resolution))
 
         phase_delay = utils.heightmap_to_phase(self.heightmap,
@@ -43,7 +45,7 @@ class ConvolveImage(nn.Module):
 
         field = optics.circular_aperture(field, self.r_cutoff)
 
-        # kernel_type = 'fresnel_conv' -> nans
+        # kernel_type = 'fresnel_conv' leads to  nans
         element = Propagation(kernel_type='fresnel',
                               propagation_distances=self.focal_length,
                               slm_resolution=[self.resolution, self.resolution],
@@ -56,36 +58,36 @@ class ConvolveImage(nn.Module):
         psf /= psf.sum()
 
         final = optics.convolve_img(x, psf)
-        #
-        # final = final.cuda()
-        # imag = torch.zeros(final.shape).cuda()
-        # img = utils.stack_complex(final, imag)
-        # img_fft = torch.fft(utils.ifftshift(img), 2)
-        #
-        # otf = optics.psf2otf(self.psf, output_size=img.shape[2:4])
-        # otf = torch.stack((otf, otf, otf), 0)
-        # otf = torch.unsqueeze(otf, 0)
-        # conj_otf = utils.conj(otf)
-        #
-        # otf_img = utils.mul_complex(img_fft,conj_otf)
-        #
-        # denominator = optics.abs_complex(otf)
-        # print(self.K)
-        # denominator[:, :, :, :, 0] += self.K
-        # product = utils.div_complex(otf_img, denominator)
-        # filtered = utils.ifftshift(torch.ifft(product,2))
-        # filtered = torch.clamp(filtered, min=1e-5)
-        #
-        # return filtered[:,:,:,:,0]
+        if not self.use_wiener:
+            return final.cuda()
+        else:
+            # perform Wiener filtering
+            final = final.cuda()
+            imag = torch.zeros(final.shape).cuda()
+            img = utils.stack_complex(final, imag)
+            img_fft = torch.fft(utils.ifftshift(img), 2)
 
-        return final.cuda()
+            otf = optics.psf2otf(psf, output_size=img.shape[2:4])
+
+            otf = torch.stack((otf, otf, otf), 0)
+            otf = torch.unsqueeze(otf, 0)
+            conj_otf = utils.conj(otf)
+
+            otf_img = utils.mul_complex(img_fft,conj_otf)
+
+            denominator = optics.abs_complex(otf)
+            denominator[:, :, :, :, 0] += self.K
+            product = utils.div_complex(otf_img, denominator)
+
+            filtered = utils.ifftshift(torch.ifft(product,2))
+            filtered = torch.clamp(filtered, min=1e-5)
+
+            return filtered[:,:,:,:,0]
 
 
 # class WienerFilter(nn.Module):
 #     """Perform Wiener Filtering with learnable damping factor
-#     if you put in a preloaded psf this works, if you try to
-#     heightmap_to_psf, it's not on CUDA
-#     DOES NOT WORK.
+#       CUDA backprop issues with module as is
 #     """
 #
 #     def __init__(self, hyps, heightmap, K):
@@ -112,11 +114,6 @@ class DenoisingUnet(nn.Module):
 
         self.nf0 = 64  # Number of features to use in the outermost layer of U-Net
 
-        if hyps['learn_wiener']:
-            self.K = nn.Parameter(torch.ones(1), requires_grad=True)
-        else:
-            self.K = hyps['K']
-
         init_heightmap = optics.heightmap_initializer(focal_length=hyps['focal_length'],
                                                       resolution=hyps['resolution'],
                                                       pixel_pitch=hyps['pixel_pitch'],
@@ -124,40 +121,35 @@ class DenoisingUnet(nn.Module):
                                                       wavelength=hyps['wavelength'],
                                                       init_lens=hyps['init_lens'])
 
-        self.heightmap = nn.Parameter(init_heightmap, requires_grad=True)
-        # height = np.load('fresnel_phasemap_7mm.npy')
-        # self.heightmap = torch.Tensor(height)
+        self.heightmap = nn.Parameter(init_heightmap,requires_grad=True)
+        self.K = nn.Parameter(torch.ones(1)*0.01)
 
-        # torch.random.manual_seed(0)
+        torch.random.manual_seed(0)
 
         modules = []
-        #
-        # psf_file = 'random_psf.npy'
-        # psf = torch.Tensor(np.load(psf_file))
-        # psf /= psf.sum()
-        # self.psf = psf
 
         modules.append(ConvolveImage(hyps,
+                                     K = self.K,
                                      heightmap=self.heightmap))
 
+        # TODO: implement wiener filtering as a separate module
         # if hyps['learn_wiener']:
         #     modules.append(WienerFilter(psf, K=self.K))
         # else:
         #     modules.append(WienerFilter(psf, K=hyps['K']))
 
-
         # if hyps["use_wiener"]:
         #     modules.append(WienerFilter(hyps, heightmap=self.heightmap, K=self.K))
 
-        # modules.append(Unet(in_channels=3,
-        #                     out_channels=3,
-        #                     use_dropout=False,
-        #                     nf0=self.nf0,
-        #                     max_channels=8 * self.nf0,
-        #                     norm=self.norm,
-        #                     num_down=num_downs_unet,
-        #                     outermost_linear=True))
-        # modules.append(nn.Tanh())
+        modules.append(Unet(in_channels=3,
+                            out_channels=3,
+                            use_dropout=False,
+                            nf0=self.nf0,
+                            max_channels=8 * self.nf0,
+                            norm=self.norm,
+                            num_down=num_downs_unet,
+                            outermost_linear=True))
+        modules.append(nn.Tanh())
 
         self.denoising_net = nn.Sequential(*modules)
 
@@ -190,7 +182,7 @@ class DenoisingUnet(nn.Module):
         return torch.Tensor([0]).cuda()
 
     def write_eval(self, prediction, ground_truth, path):
-        '''At test time, this saves examples to disk in a format that allows easy inspection'''
+        """At test time, this saves examples to disk in a format that allows easy inspection"""
         pred = prediction.detach().cpu().numpy()
         gt = ground_truth.detach().cpu().numpy()
 
@@ -200,9 +192,8 @@ class DenoisingUnet(nn.Module):
 
         imageio.imwrite(path, output)
 
-
     def write_updates(self, writer, predictions, ground_truth, input, iter, hyps):
-        '''Writes out tensorboard scalar and figures.'''
+        """Writes out tensorboard scalar and figures."""
         batch_size, _, _, _ = predictions.shape
         ground_truth = ground_truth.cuda()
 
@@ -217,7 +208,7 @@ class DenoisingUnet(nn.Module):
         writer.add_scalar("damp", self.get_damp(), iter)
         writer.add_figure("heightmap", self.get_heightmap_fig(), iter)
 
-        psf = optics.heightmap_to_psf(hyps, self.get_heightmap()).cpu().detach().numpy()
+        psf = self.get_psf(hyps)
         plt.figure()
         plt.imshow(psf)
         plt.colorbar()
@@ -225,9 +216,8 @@ class DenoisingUnet(nn.Module):
         plt.close()
         writer.add_figure("psf", fig, iter)
 
-
     def get_psnr(self, predictions, ground_truth):
-        '''Calculates the PSNR of the model's prediction.'''
+        """Calculates the PSNR of the model's prediction."""
         batch_size, _, _, _ = predictions.shape
         pred = predictions.detach().cpu().numpy()
         gt = ground_truth.detach().cpu().numpy()
@@ -235,15 +225,17 @@ class DenoisingUnet(nn.Module):
         return skimage.measure.compare_psnr(gt, pred, data_range=2)
 
     def get_damp(self):
-        return self.K
-
+        """Returns current Wiener filtering damping factor."""
+        return self.K.data.cpu()
 
     def get_psf(self, hyps):
+        """Returns the PSF of the current heightmap."""
         psf = optics.heightmap_to_psf(hyps, self.get_heightmap())
         return psf.cpu().numpy()
 
-
     def get_heightmap_fig(self):
+        """Wrapper function for getting heightmap and returning
+        figure handle."""
         x = self.heightmap.data.cpu().numpy()
         plt.figure()
         plt.imshow(x)
@@ -252,16 +244,9 @@ class DenoisingUnet(nn.Module):
         return fig
 
     def get_heightmap(self):
+        """Returns heightmap."""
         return self.heightmap.data.cpu()
 
     def forward(self, input):
         self.logs = list()  # Resets the logs
-
-        batch_size, _, _, _ = input.shape
-
-        noisy_img = input
-
-        pred_noise = self.denoising_net(noisy_img)
-        output = pred_noise
-
-        return output
+        return self.denoising_net(input)

@@ -1,17 +1,8 @@
 import torchvision
 from torchvision.transforms import *
 import sys
-
-sys.path.append("../")
+import optics
 from utils import *
-
-
-def linear_to_srgb(img):
-    return np.where(img <= 0.0031308, 12.92 * img, 1.055 * img ** (0.41666) - 0.055)
-
-
-def srgb_to_linear(img):
-    return np.where(img <= 0.04045, img / 12.92, ((img + 0.055) / 1.055) ** 2.4)
 
 
 class NoisySBDataset():
@@ -23,7 +14,6 @@ class NoisySBDataset():
             Resize(size=(512,512)),
             ToTensor()
         ])
-        self.K = hyps['K']
 
         # if you set download=True AND you've downloaded the files,
         # it'll never finish running :-(
@@ -35,14 +25,14 @@ class NoisySBDataset():
         return len(self.dataset)
 
     def __getitem__(self, idx):  # a[x] for calling a.__getitem__(x)
-        '''Returns tuple of (model_input, ground_truth)
+        """Returns tuple of (model_input, ground_truth)
         Modifies each item of the dataset upon retrieval
-        Convolves with specified PSF
-        '''
+        a[x] for calling a.__getitem__(x)
+        """
         img, _ = self.dataset[idx]
         if self.transforms:
             img = self.transforms(img)
 
-        img = torch.Tensor(srgb_to_linear(img))
+        img = torch.Tensor(optics.srgb_to_linear(img))
 
         return img, img
