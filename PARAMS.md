@@ -7,11 +7,10 @@
 * `checkpoint`: load checkpoint file if you want to continue training from a previous training session
 * `max_epoch`: maximum number of epochs
 * `lr`: learning rate
-* `scheduler`: type of scheduler (not implemented yet)
 * `batch_size`: batch size
 * `reg_weight`: regularizer factor
 * `init_K`: initialization Wiener filtering
-* `learn_weiener`: `true` or `false` to learn wiener filtering damping factor K
+* `use_weiener`: `true` or `false` to learn wiener filtering damping factor K
 * `resolution`: int for resolution of point spread function
 * `pixel_pitch`: float for pixel size
 * `focal_length`: float for distance between phase mask and sensor
