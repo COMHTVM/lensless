@@ -42,7 +42,6 @@ def image_loader(img_name):
     return blurred_image.cuda(), image.cuda()
 
 
-
 def get_lr(optimizer):
     """
     :param optimizer: optimizer object
@@ -116,7 +115,6 @@ def train(hyps):
     writer = SummaryWriter(run_dir)  # run directory for tensorboard information
     iter = 0
 
-
     print('Beginning training...')
     if hyps['single_image']:
         print('Optimizing over a single image...')
@@ -159,7 +157,6 @@ def train(hyps):
             writer.add_scalar("distortion_loss", dist_loss, iter)
             writer.add_scalar("learning_rate", get_lr(optimizer), iter)
 
-
             if prev_loss - total_loss <= tolerance:
                 stop_count += 1
                 if stop_count >= early_stop:
@@ -177,7 +174,7 @@ def train(hyps):
                     f.write("\n")
 
             iter += 1
-            if iter % 500 == 0:  # used to be 10,000
+            if iter % 10 == 0:  # used to be 10,000
                 save_dict = {
                     "model_state_dict": model.state_dict(),
                     "optim_state_dict": optimizer.state_dict(),

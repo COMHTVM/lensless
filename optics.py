@@ -169,7 +169,7 @@ def heightmap_initializer(focal_length,
         heightmap = -(x ** 2 + y ** 2) / 2. * (1. / convex_radius)
         if init_lens == 'fresnel':
             phases = utils.heightmap_to_phase(heightmap, wavelength, refractive_idc)
-            fresnel = optics.simple_to_fresnel_lens(phases)
+            fresnel = simple_to_fresnel_lens(phases)
             heightmap = utils.phase_to_heightmap(fresnel, wavelength, refractive_idc)
 
     elif init_lens == 'flat':

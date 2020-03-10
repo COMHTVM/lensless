@@ -1,5 +1,4 @@
 {
   "lr": [1e-5],
-  "focal_length": [0.1e-2],
-  "init_lens": ["flat"]
+  "focal_length": [0.77e-2]
 }
