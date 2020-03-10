@@ -58,6 +58,7 @@ class ConvolveImage(nn.Module):
         psf /= psf.sum()
 
         final = optics.convolve_img(x, psf)
+        return final.cuda()
         if not self.use_wiener:
             return final.cuda()
         else:
@@ -122,7 +123,7 @@ class DenoisingUnet(nn.Module):
                                                       init_lens=hyps['init_lens'])
 
         self.heightmap = nn.Parameter(init_heightmap,requires_grad=True)
-        self.K = nn.Parameter(torch.ones(1)*0.01)
+        self.K = nn.Parameter(torch.ones(1)*hyps['init_K'])
 
         torch.random.manual_seed(0)
 
