@@ -10,7 +10,7 @@
 * `scheduler`: type of scheduler (not implemented yet)
 * `batch_size`: batch size
 * `reg_weight`: regularizer factor
-* `K`: a fixed damping factor for Wiener filtering
+* `init_K`: initialization Wiener filtering
 * `learn_weiener`: `true` or `false` to learn wiener filtering damping factor K
 * `resolution`: int for resolution of point spread function
 * `pixel_pitch`: float for pixel size
