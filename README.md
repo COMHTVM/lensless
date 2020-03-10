@@ -9,7 +9,7 @@ This repo contains code to perform end-to-end optimization of a plastic phase ma
 ## Pipeline
 ![image](link)
 
-We implement an optics module, sensor module, and U-Net for image reconstruction. The loss is backpropagated into the heightmap to optimize a coded phase mask.
+We implement an optics module, sensor module, and Wiener filtering for image reconstruction. The loss is backpropagated into the heightmap to optimize a coded phase mask.
 
 ## File guide
 * `train.py` is the main training script (implements sequence of experiments as a queue)
