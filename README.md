@@ -7,7 +7,7 @@ Author: Cindy Nguyen, cindyn at stanford.edu
 This repo contains code to perform end-to-end optimization of a plastic phase mask placed close to the sensor (<= 25 mm focal distance).
 
 ## Pipeline
-![image](link)
+![pipeline](https://user-images.githubusercontent.com/21781041/76365430-8a440300-62e4-11ea-8903-5979883f99ee.png)
 
 We implement an optics module, sensor module, and Wiener deconvolution for image reconstruction. The loss is backpropagated into the heightmap to optimize a coded phase mask.
 
@@ -32,6 +32,13 @@ where `#` specifies GPU device number.
 * Data generated from the experiment (saved models and Tensorboard files) will be specified in `runs/exp_name/exp_name_#` where `exp_name` is as specified in hyperaparameters and `#` is automatically determined.
 * The training script is set up so that a new experiment is created for each hyperparameter in `ranges.json`, run each sequentially to completion, and save model checkpoints during training in the `runs` folder. 
 * Data files are not included to save space.
+
+## Results
+![doe](https://user-images.githubusercontent.com/21781041/76365740-54534e80-62e5-11ea-81c6-d718e3d0cd54.png)
+Results from optimizing the height map only.
+
+![wiener](https://user-images.githubusercontent.com/21781041/76365750-5cab8980-62e5-11ea-93b1-b138503c378b.png)
+Results from optimizing both the height map and Wiener deconvolution damping factor.
 
 ## Dependencies
 * pytorch
