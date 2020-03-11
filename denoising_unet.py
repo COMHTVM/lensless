@@ -12,6 +12,7 @@ if torch.cuda.is_available():
 else:
     DEVICE = torch.device("cpu")
 
+
 def num_divisible_by_2(number):
     return np.floor(np.log2(number)).astype(int)
 
@@ -61,7 +62,6 @@ class ConvolveImage(nn.Module):
         psf /= psf.sum()
 
         final = optics.convolve_img(x, psf)
-        return final.to(DEVICE)
         if not self.use_wiener:
             return final.to(DEVICE)
         else:
@@ -77,16 +77,16 @@ class ConvolveImage(nn.Module):
             otf = torch.unsqueeze(otf, 0)
             conj_otf = utils.conj(otf)
 
-            otf_img = utils.mul_complex(img_fft,conj_otf)
+            otf_img = utils.mul_complex(img_fft, conj_otf)
 
             denominator = optics.abs_complex(otf)
             denominator[:, :, :, :, 0] += self.K
             product = utils.div_complex(otf_img, denominator)
 
-            filtered = utils.ifftshift(torch.ifft(product,2))
+            filtered = utils.ifftshift(torch.ifft(product, 2))
             filtered = torch.clamp(filtered, min=1e-5)
 
-            return filtered[:,:,:,:,0]
+            return filtered[:, :, :, :, 0]
 
 
 # class WienerFilter(nn.Module):
@@ -125,15 +125,15 @@ class DenoisingUnet(nn.Module):
                                                       wavelength=hyps['wavelength'],
                                                       init_lens=hyps['init_lens'])
 
-        self.heightmap = nn.Parameter(init_heightmap,requires_grad=True)
-        self.K = nn.Parameter(torch.ones(1)*hyps['init_K'])
+        self.heightmap = nn.Parameter(init_heightmap, requires_grad=True)
+        self.K = nn.Parameter(torch.ones(1) * hyps['init_K'])
 
         torch.random.manual_seed(0)
 
         modules = []
 
         modules.append(ConvolveImage(hyps,
-                                     K = self.K,
+                                     K=self.K,
                                      heightmap=self.heightmap))
 
         # TODO: implement wiener filtering as a separate module
@@ -145,15 +145,15 @@ class DenoisingUnet(nn.Module):
         # if hyps["use_wiener"]:
         #     modules.append(WienerFilter(hyps, heightmap=self.heightmap, K=self.K))
 
-        modules.append(Unet(in_channels=3,
-                            out_channels=3,
-                            use_dropout=False,
-                            nf0=self.nf0,
-                            max_channels=8 * self.nf0,
-                            norm=self.norm,
-                            num_down=num_downs_unet,
-                            outermost_linear=True))
-        modules.append(nn.Tanh())
+        # modules.append(Unet(in_channels=3,
+        #                     out_channels=3,
+        #                     use_dropout=False,
+        #                     nf0=self.nf0,
+        #                     max_channels=8 * self.nf0,
+        #                     norm=self.norm,
+        #                     num_down=num_downs_unet,
+        #                     outermost_linear=True))
+        # modules.append(nn.Tanh())
 
         self.denoising_net = nn.Sequential(*modules)
 
@@ -165,10 +165,6 @@ class DenoisingUnet(nn.Module):
         self.logs = list()
         self.learned_gamma = list()
 
-        if torch.cuda.is_available():
-            self.device = torch.device("cuda:0")
-        else:
-            self.device = torch.device("cpu")
         self.to(DEVICE)
 
         # print("*" * 100)
@@ -185,13 +181,12 @@ class DenoisingUnet(nn.Module):
     def get_regularization_loss(self, prediction, ground_truth):
         return torch.Tensor([0]).to(DEVICE)
 
-
     def write_updates(self, writer, predictions, ground_truth, input, iter, hyps):
         """Writes out tensorboard scalar and figures."""
         batch_size, _, _, _ = predictions.shape
         ground_truth = ground_truth.to(DEVICE)
 
-        output_input_gt = torch.cat((input, predictions, ground_truth), dim=0)
+        output_input_gt = torch.cat((predictions, ground_truth), dim=0)
         grid = torchvision.utils.make_grid(output_input_gt,
                                            scale_each=True,
                                            nrow=batch_size,

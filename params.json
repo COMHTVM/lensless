@@ -17,6 +17,6 @@
   "refractive_idc": 1.4349,
   "wavelength": 530e-9,
   "init_lens": "fresnel",
-  "single_image": true,
+  "single_image": false,
   "download_data": false
 }

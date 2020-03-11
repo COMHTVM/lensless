@@ -240,7 +240,7 @@ def train(hyps):
                 torch.save(save_dict, os.path.join(run_dir, 'model_epoch_%d_iter_%s.pth' % (epoch, iter)))
 
         if stop_count >= early_stop:
-            break
+            breakp
     torch.save(save_dict, os.path.join(run_dir, 'model_epoch_%d_iter_%s.pth' % (epoch, iter)))
 
     results = {"epoch": epoch,
