@@ -10,7 +10,10 @@ import torch.nn
 import time
 from queue import Queue
 
-DEVICE = torch.device('cuda')
+if torch.cuda.is_available():
+    DEVICE = torch.device("cuda:0")
+else:
+    DEVICE = torch.device("cpu")
 
 
 def load_json(file_name):
@@ -39,7 +42,7 @@ def image_loader(img_name):
     image = torch.Tensor(optics.srgb_to_linear(image))
     blurred_image = image.unsqueeze(0)  # specify a batch size of 1
     image = image.unsqueeze(0)
-    return blurred_image.cuda(), image.cuda()
+    return blurred_image.to(DEVICE), image.to(DEVICE)
 
 
 def get_lr(optimizer):
@@ -81,16 +84,17 @@ def train(hyps):
     torch.cuda.empty_cache()
 
     # *** load model and data set ****
-    dataset = NoisySBDataset(hyps=hyps)
     model = DenoisingUnet(hyps=hyps)
 
-    dataloader = DataLoader(dataset, batch_size=hyps['batch_size'])
-    print('Data loader size: ', len(dataloader))
+    if not hyps['single_image']:
+        dataset = NoisySBDataset(hyps=hyps)
+        dataloader = DataLoader(dataset, batch_size=hyps['batch_size'])
+        print('Data loader size: ', len(dataloader))
 
     if hyps['checkpoint'] is not None:  # if trained model is not given, start new checkpoint
         model.load_state_dict(torch.load(hyps['checkpoint']))
 
-    model.cuda()
+    model.to(DEVICE)
 
     # *** establish folders for saving experiment ***
     run_init = os.path.join(hyps['logging_root'], hyps['exp_name'])
@@ -127,13 +131,53 @@ def train(hyps):
     early_stop = 800
     epoch_loss = 0
 
+    if hyps['single_image']:  # MINI-LOOP for testing
+        model_input, ground_truth = image_loader('data/lamb.png')
+        ground_truth = ground_truth.to(DEVICE)
+        model_input = model_input.to(DEVICE)
+
+        for epoch in range(hyps['max_epoch']):
+            model_outputs = model(model_input)
+            optimizer.zero_grad()
+
+            total_loss = model.get_distortion_loss(model_outputs, ground_truth)
+
+            total_loss.backward()
+            optimizer.step()
+            scheduler.step(total_loss)
+
+            print("Epoch %03d  total_loss %0.4f" % (epoch, total_loss))
+
+            if not iter:  # on the first iteration
+                # Save parameters used into the log directory.
+                results_file = run_dir + "/params.txt"
+                with open(results_file, 'a') as f:
+                    for k in hyps.keys():
+                        f.write(str(k) + ": " + str(hyps[k]) + '\n')
+                    f.write("\n")
+
+            iter += 1
+            if iter % 10 == 0:
+                save_dict = {
+                    "model_state_dict": model.state_dict(),
+                    "heightmap": model.get_heightmap().numpy(),
+                    "psf": model.get_psf(hyps),
+                    "epoch": epoch,
+                    "iter": iter,
+                    "hyps": hyps,
+                    "loss": total_loss,
+                }
+
+                torch.save(save_dict, os.path.join(run_dir, 'model_epoch_%d_iter_%s.pth' % (epoch, iter)))
+        results = {"epoch": epoch,
+                   "loss": total_loss}
+        return results
+
     for epoch in range(hyps['max_epoch']):
         for model_input, ground_truth in dataloader:
-            if hyps['single_image']: # use for testing
-                model_input, ground_truth = image_loader('data/lamb.png')
 
-            ground_truth = ground_truth.cuda()
-            model_input = model_input.cuda()
+            ground_truth = ground_truth.to(DEVICE)
+            model_input = model_input.to(DEVICE)
 
             model_outputs = model(model_input)
             model.write_updates(writer, model_outputs, ground_truth, model_input, iter, hyps)
@@ -289,6 +333,7 @@ if __name__ == '__main__':
     print("\n".join(["{}: {}".format(k, v) for k, v in ranges.items()]))
 
     os.makedirs(hyps['data_root'], exist_ok=True)
+    os.makedirs(hyps['logging_root'], exist_ok=True)
 
     start_time = time.time()
     hyper_search(hyps, ranges)

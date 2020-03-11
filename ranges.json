@@ -1,4 +1,4 @@
 {
   "lr": [1e-5],
-  "focal_length": [0.77e-2]
+  "focal_length": [0.77e-2, 0.5e-2]
 }

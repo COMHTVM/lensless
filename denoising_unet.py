@@ -1,4 +1,3 @@
-import imageio
 import skimage.measure
 import torchvision
 import utils
@@ -8,6 +7,10 @@ import torch.nn
 import optics
 from propagation import Propagation
 
+if torch.cuda.is_available():
+    DEVICE = torch.device("cuda:0")
+else:
+    DEVICE = torch.device("cpu")
 
 def num_divisible_by_2(number):
     return np.floor(np.log2(number)).astype(int)
@@ -58,13 +61,13 @@ class ConvolveImage(nn.Module):
         psf /= psf.sum()
 
         final = optics.convolve_img(x, psf)
-        return final.cuda()
+        return final.to(DEVICE)
         if not self.use_wiener:
-            return final.cuda()
+            return final.to(DEVICE)
         else:
             # perform Wiener filtering
-            final = final.cuda()
-            imag = torch.zeros(final.shape).cuda()
+            final = final.to(DEVICE)
+            imag = torch.zeros(final.shape).to(DEVICE)
             img = utils.stack_complex(final, imag)
             img_fft = torch.fft(utils.ifftshift(img), 2)
 
@@ -93,7 +96,7 @@ class ConvolveImage(nn.Module):
 #
 #     def __init__(self, hyps, heightmap, K):
 #         super(WienerFilter, self).__init__()
-#         self.psf = optics.heightmap_to_psf(hyps, heightmap).cuda()
+#         self.psf = optics.heightmap_to_psf(hyps, heightmap).to(DEVICE)
 #         self.K = K
 #
 #     def forward(self, x):
@@ -166,7 +169,7 @@ class DenoisingUnet(nn.Module):
             self.device = torch.device("cuda:0")
         else:
             self.device = torch.device("cpu")
-        self.cuda()
+        self.to(DEVICE)
 
         # print("*" * 100)
         # print(self)  # Prints the model
@@ -175,28 +178,18 @@ class DenoisingUnet(nn.Module):
         print("*" * 100)
 
     def get_distortion_loss(self, prediction, ground_truth):
-        trgt_imgs = ground_truth.cuda()
+        trgt_imgs = ground_truth.to(DEVICE)
 
         return self.loss(prediction, trgt_imgs)
 
     def get_regularization_loss(self, prediction, ground_truth):
-        return torch.Tensor([0]).cuda()
+        return torch.Tensor([0]).to(DEVICE)
 
-    def write_eval(self, prediction, ground_truth, path):
-        """At test time, this saves examples to disk in a format that allows easy inspection"""
-        pred = prediction.detach().cpu().numpy()
-        gt = ground_truth.detach().cpu().numpy()
-
-        output = np.concatenate((pred, gt), axis=1)
-        output /= 2.
-        output += 0.5
-
-        imageio.imwrite(path, output)
 
     def write_updates(self, writer, predictions, ground_truth, input, iter, hyps):
         """Writes out tensorboard scalar and figures."""
         batch_size, _, _, _ = predictions.shape
-        ground_truth = ground_truth.cuda()
+        ground_truth = ground_truth.to(DEVICE)
 
         output_input_gt = torch.cat((input, predictions, ground_truth), dim=0)
         grid = torchvision.utils.make_grid(output_input_gt,

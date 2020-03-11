@@ -9,6 +9,11 @@ import numpy as np
 from propagation import Propagation
 import torch.nn
 
+if torch.cuda.is_available():
+    DEVICE = torch.device("cuda:0")
+else:
+    DEVICE = torch.device("cpu")
+
 
 def linear_to_srgb(img):
     return np.where(img <= 0.0031308, 12.92 * img, 1.055 * img ** (0.41666) - 0.055)
@@ -25,12 +30,12 @@ def wiener_filter(img, psf, K):
     :param K: damping factor (can be input through hyps or learned)
     :return: Wiener filtered image in one channel (N,C,H,W)
     """
-    img = img.cuda()
-    psf = psf.cuda()
-    imag = torch.zeros(img.shape).cuda()
+    img = img.to(DEVICE)
+    psf = psf.to(DEVICE)
+    imag = torch.zeros(img.shape).to(DEVICE)
     img = utils.stack_complex(img,imag)
     img_fft = torch.fft(utils.ifftshift(img),2)
-    img_fft = img_fft.cuda()
+    img_fft = img_fft.to(DEVICE)
 
     otf = psf2otf(psf, output_size=img.shape[2:4])
     otf = torch.stack((otf,otf,otf),0)
@@ -123,7 +128,7 @@ def heightmap_to_psf(hyps, height_map):
     field = element.forward(field)
     psf = utils.field_to_intensity(field)
     psf /= psf.sum()
-    return psf.cuda()
+    return psf.to(DEVICE)
 
 
 def fspecial_gauss(size, sigma):
@@ -208,9 +213,9 @@ def psf2otf(input_filter, output_size):
     down = padded[(fh-1)//2:,:]
     padded = torch.cat([down, up], 0)
 
-    tmp = utils.stack_complex(padded.cuda(), torch.zeros(padded.shape).cuda())
+    tmp = utils.stack_complex(padded.to(DEVICE), torch.zeros(padded.shape).to(DEVICE))
     tmp = torch.fft(tmp,2)
-    return tmp.cuda()
+    return tmp.to(DEVICE)
 
 
 def abs_complex(input_field):
@@ -223,7 +228,7 @@ def abs_complex(input_field):
     real, imag = utils.unstack_complex(input_field)
     real = real ** 2 + imag ** 2
     imag = torch.zeros(real.shape)
-    return utils.stack_complex(real.cuda(),imag.cuda())
+    return utils.stack_complex(real.to(DEVICE),imag.to(DEVICE))
 
 
 def simple_to_fresnel_lens(phase_delay):
