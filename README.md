@@ -12,9 +12,9 @@ This repo contains code to perform end-to-end optimization of a plastic phase ma
 We implement an optics module, sensor module, and Wiener deconvolution for image reconstruction. The loss is backpropagated into the heightmap to optimize a coded phase mask.
 
 ## File guide
-* `train.py` is the main training script (implements sequence of experiments as a queue)
+* `train.py` is the main training script (implements sequence of experiments as a queue, each experiment means training on one particular set of hyperparameters)
 * `params.json` is used to load hyperparameters relevant for training and initialization (see `README.md` for details)
-* `ranges.json` is used for queueing up multiple experiments (which will stop depending on early stopping criteria)
+* `ranges.json` is where you can specify the hyperparameters to switch out in between experiments (each experiment will stop depending on early stopping criteria)
 * `dataio.py` contains the dataloader that will load the SBDataset for training
 * `denoising_unet.py` contains the model and model helper functions
 * `notebooks/analyze_models.ipynb` loads models and plots losses
@@ -28,7 +28,7 @@ We implement an optics module, sensor module, and Wiener deconvolution for image
 ```ssh
 $ CUDA_VISIBLE_DEVICES=# python3 train.py
 ```
-where `#` specifies GPU device number.
+where `#` specifies GPU device number. If running on CPU, you can simply run `python3 train.py`.
 * Data generated from the experiment (saved models and Tensorboard files) will be specified in `runs/exp_name/exp_name_#` where `exp_name` is as specified in hyperaparameters and `#` is automatically determined.
 * The training script is set up so that a new experiment is created for each hyperparameter in `ranges.json`, run each sequentially to completion, and save model checkpoints during training in the `runs` folder. 
 * Data files are not included to save space.
